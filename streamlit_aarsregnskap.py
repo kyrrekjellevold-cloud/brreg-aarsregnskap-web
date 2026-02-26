@@ -6,12 +6,13 @@ Søk etter virksomhet og last ned årsregnskap-PDF-er direkte fra Brreg.
 Deploy gratis på https://share.streamlit.io
 """
 
+import base64
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from pathlib import Path
 
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 
 st.set_page_config(
     page_title="Brreg Årsregnskap",
@@ -55,16 +56,14 @@ def _get_session() -> requests.Session:
         _thread_local.session = requests.Session()
     return _thread_local.session
 
-def fetch_and_save(orgnr: str, year: str, folder: Path) -> str:
+def fetch_pdf(orgnr: str, year: str) -> bytes:
     r = _get_session().get(
         f"{REGNSKAP_BASE}/{orgnr}/{year}",
         headers={"Accept": "application/octet-stream"},
         timeout=120,
     )
     r.raise_for_status()
-    fname = f"aarsregnskap-{year}_{orgnr}.pdf"
-    (folder / fname).write_bytes(r.content)
-    return fname
+    return r.content
 
 
 # ── Page ─────────────────────────────────────────────────────────────────────
@@ -103,7 +102,6 @@ if st.session_state.companies is not None:
         )
         company = companies[idx]
         orgnr   = company["organisasjonsnummer"]
-        navn    = company["navn"]
 
         col1, col2, col3 = st.columns(3)
         col1.metric("Org.nr.", orgnr)
@@ -125,34 +123,58 @@ if st.session_state.companies is not None:
             st.success(f"Tilgjengelige år: {', '.join(sorted(years))}")
             st.divider()
 
-            # ── 4. Download all years in parallel, save directly to Downloads ──
+            # ── 4. Fetch all in parallel, push to browser Downloads ───────────
 
             if st.button("⬇  Last ned alle år", use_container_width=True, type="primary"):
-                save_dir = Path.home() / "Downloads"
-                save_dir.mkdir(parents=True, exist_ok=True)
-
                 sorted_years = sorted(years)
                 bar    = st.progress(0, text="Laster ned…")
                 done   = 0
-                saved  = []
-                errors = []
+                results = {}
+                errors  = []
 
                 with ThreadPoolExecutor(max_workers=len(sorted_years)) as pool:
-                    futures = {pool.submit(fetch_and_save, orgnr, yr, save_dir): yr for yr in sorted_years}
+                    futures = {pool.submit(fetch_pdf, orgnr, yr): yr for yr in sorted_years}
                     for future in as_completed(futures):
                         yr = futures[future]
                         try:
-                            saved.append(future.result())
+                            results[yr] = future.result()
                         except Exception as e:
                             errors.append(f"{yr}: {e}")
                         done += 1
                         bar.progress(done / len(sorted_years), text=f"{done}/{len(sorted_years)} ferdig…")
 
                 bar.empty()
-                if saved:
-                    st.success(f"✅  {len(saved)} PDF-er lagret i `{save_dir}`")
-                    for fname in sorted(saved):
-                        st.write(f"• {fname}")
+
+                if results:
+                    # Build JS that triggers one browser download per PDF,
+                    # staggered so the browser doesn't block them.
+                    js_parts = []
+                    for i, yr in enumerate(sorted(results.keys())):
+                        b64  = base64.b64encode(results[yr]).decode("ascii")
+                        fname = f"aarsregnskap-{yr}_{orgnr}.pdf"
+                        js_parts.append(f"""
+                            setTimeout(function() {{
+                                var b = atob("{b64}");
+                                var u = new Uint8Array(b.length);
+                                for (var k = 0; k < b.length; k++) u[k] = b.charCodeAt(k);
+                                var blob = new Blob([u], {{type: "application/pdf"}});
+                                var url  = URL.createObjectURL(blob);
+                                var a    = document.createElement("a");
+                                a.href     = url;
+                                a.download = "{fname}";
+                                document.body.appendChild(a);
+                                a.click();
+                                document.body.removeChild(a);
+                                URL.revokeObjectURL(url);
+                            }}, {i * 600});
+                        """)
+
+                    components.html(
+                        f"<script>{''.join(js_parts)}</script>",
+                        height=1,
+                    )
+                    st.success(f"✅  {len(results)} PDF-er lastes ned til din nedlastingsmappe")
+
                 if errors:
                     st.warning("Noen år feilet: " + " | ".join(errors))
 
