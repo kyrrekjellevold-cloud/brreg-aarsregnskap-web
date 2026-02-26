@@ -9,7 +9,6 @@ Deploy gratis på https://share.streamlit.io
 import io
 import zipfile
 
-import httpx
 import requests
 import streamlit as st
 
@@ -49,13 +48,13 @@ def get_available_years(orgnr: str) -> list[str]:
 
 
 def fetch_pdf(orgnr: str, year: str) -> bytes:
-    with httpx.Client(http2=True, timeout=120) as client:
-        resp = client.get(
-            f"{REGNSKAP_BASE}/{orgnr}/{year}",
-            headers={"Accept": "application/octet-stream"},
-        )
-        resp.raise_for_status()
-        return resp.content
+    r = requests.get(
+        f"{REGNSKAP_BASE}/{orgnr}/{year}",
+        headers={"Accept": "application/octet-stream"},
+        timeout=120,
+    )
+    r.raise_for_status()
+    return r.content
 
 
 # ── Page ─────────────────────────────────────────────────────────────────────
