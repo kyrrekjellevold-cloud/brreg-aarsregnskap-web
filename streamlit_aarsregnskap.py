@@ -8,6 +8,7 @@ Deploy gratis på https://share.streamlit.io
 
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 
 import requests
 import streamlit as st
@@ -18,7 +19,7 @@ st.set_page_config(
     layout="centered",
 )
 
-ENHETER_URL  = "https://data.brreg.no/enhetsregisteret/api/enheter"
+ENHETER_URL   = "https://data.brreg.no/enhetsregisteret/api/enheter"
 REGNSKAP_BASE = "https://data.brreg.no/regnskapsregisteret/regnskap/aarsregnskap/kopi"
 
 
@@ -54,14 +55,16 @@ def _get_session() -> requests.Session:
         _thread_local.session = requests.Session()
     return _thread_local.session
 
-def fetch_pdf(orgnr: str, year: str) -> bytes:
+def fetch_and_save(orgnr: str, year: str, folder: Path) -> str:
     r = _get_session().get(
         f"{REGNSKAP_BASE}/{orgnr}/{year}",
         headers={"Accept": "application/octet-stream"},
         timeout=120,
     )
     r.raise_for_status()
-    return r.content
+    fname = f"aarsregnskap-{year}_{orgnr}.pdf"
+    (folder / fname).write_bytes(r.content)
+    return fname
 
 
 # ── Page ─────────────────────────────────────────────────────────────────────
@@ -69,10 +72,8 @@ def fetch_pdf(orgnr: str, year: str) -> bytes:
 st.title("📄 Brreg Årsregnskap")
 st.caption("Søk etter virksomhet og last ned årsregnskap-PDF-er fra Brønnøysundregistrene")
 
-# Initialise session state
-for key in ("companies", "all_pdfs"):
-    if key not in st.session_state:
-        st.session_state[key] = None
+if "companies" not in st.session_state:
+    st.session_state.companies = None
 
 # ── 1. Search ─────────────────────────────────────────────────────────────────
 
@@ -84,7 +85,6 @@ if submitted and query.strip():
     with st.spinner("Søker…"):
         try:
             st.session_state.companies = search_companies(query.strip())
-            st.session_state.all_pdfs = None
         except Exception as e:
             st.error(f"Søkefeil: {e}")
 
@@ -103,8 +103,8 @@ if st.session_state.companies is not None:
         )
         company = companies[idx]
         orgnr   = company["organisasjonsnummer"]
+        navn    = company["navn"]
 
-        # Mini info card
         col1, col2, col3 = st.columns(3)
         col1.metric("Org.nr.", orgnr)
         col2.metric("Form", (company.get("organisasjonsform") or {}).get("beskrivelse", "—"))
@@ -125,47 +125,41 @@ if st.session_state.companies is not None:
             st.success(f"Tilgjengelige år: {', '.join(sorted(years))}")
             st.divider()
 
-            # ── 4. Download all years in parallel ─────────────────────────────
+            # Folder path — defaults to ~/Downloads/<navn>
+            safe_navn = "".join(c for c in navn if c.isalnum() or c in " _-").strip()
+            default_folder = str(Path.home() / "Downloads" / safe_navn)
+            folder_input = st.text_input("Lagre i mappe", value=default_folder)
+
+            # ── 4. Download all years in parallel, save directly to folder ────
 
             if st.button("⬇  Last ned alle år", use_container_width=True, type="primary"):
+                save_dir = Path(folder_input).expanduser()
+                save_dir.mkdir(parents=True, exist_ok=True)
+
                 sorted_years = sorted(years)
                 bar    = st.progress(0, text="Laster ned…")
                 done   = 0
-                results = {}
-                errors  = []
+                saved  = []
+                errors = []
 
                 with ThreadPoolExecutor(max_workers=len(sorted_years)) as pool:
-                    futures = {pool.submit(fetch_pdf, orgnr, yr): yr for yr in sorted_years}
+                    futures = {pool.submit(fetch_and_save, orgnr, yr, save_dir): yr for yr in sorted_years}
                     for future in as_completed(futures):
                         yr = futures[future]
                         try:
-                            results[yr] = future.result()
+                            saved.append(future.result())
                         except Exception as e:
                             errors.append(f"{yr}: {e}")
                         done += 1
                         bar.progress(done / len(sorted_years), text=f"{done}/{len(sorted_years)} ferdig…")
 
                 bar.empty()
+                if saved:
+                    st.success(f"✅  {len(saved)} PDF-er lagret i `{save_dir}`")
+                    for fname in sorted(saved):
+                        st.write(f"• {fname}")
                 if errors:
                     st.warning("Noen år feilet: " + " | ".join(errors))
-                st.session_state.all_pdfs = results
-
-            # ── 5. Show individual download buttons ───────────────────────────
-
-            if st.session_state.all_pdfs:
-                pdfs = st.session_state.all_pdfs
-                for yr in sorted(pdfs.keys(), reverse=True):
-                    data = pdfs[yr]
-                    sz   = len(data) // 1024
-                    fname = f"aarsregnskap-{yr}_{orgnr}.pdf"
-                    st.download_button(
-                        label=f"💾  {yr}  ({sz} KB)",
-                        data=data,
-                        file_name=fname,
-                        mime="application/pdf",
-                        use_container_width=True,
-                        key=f"dl_{yr}",
-                    )
 
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.divider()
