@@ -25,6 +25,7 @@ REGNSKAP_BASE = "https://data.brreg.no/regnskapsregisteret/regnskap/aarsregnskap
 
 # ── API helpers ───────────────────────────────────────────────────────────────
 
+@st.cache_data(ttl=600, show_spinner=False)
 def search_companies(query: str) -> list[dict]:
     r = requests.get(
         ENHETER_URL,
@@ -35,6 +36,7 @@ def search_companies(query: str) -> list[dict]:
     return r.json().get("_embedded", {}).get("enheter", [])
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
 def get_available_years(orgnr: str) -> list[str]:
     r = requests.get(
         f"{REGNSKAP_BASE}/{orgnr}/aar",
@@ -63,7 +65,7 @@ st.title("📄 Brreg Årsregnskap")
 st.caption("Søk etter virksomhet og last ned årsregnskap-PDF-er fra Brønnøysundregistrene")
 
 # Initialise session state
-for key in ("companies", "selected_orgnr", "years", "pdf_bytes", "pdf_name", "zip_bytes", "zip_name"):
+for key in ("companies", "pdf_bytes", "pdf_name", "zip_bytes", "zip_name"):
     if key not in st.session_state:
         st.session_state[key] = None
 
@@ -77,14 +79,12 @@ if submitted and query.strip():
     with st.spinner("Søker…"):
         try:
             st.session_state.companies = search_companies(query.strip())
-            # Reset downstream state when a new search is run
-            st.session_state.years      = None
-            st.session_state.pdf_bytes  = None
-            st.session_state.zip_bytes  = None
+            st.session_state.pdf_bytes = None
+            st.session_state.zip_bytes = None
         except Exception as e:
             st.error(f"Søkefeil: {e}")
 
-# ── 2. Company picker ─────────────────────────────────────────────────────────
+# ── 2. Company picker → auto-load years ───────────────────────────────────────
 
 if st.session_state.companies is not None:
     companies = st.session_state.companies
@@ -106,86 +106,79 @@ if st.session_state.companies is not None:
         col2.metric("Form", (company.get("organisasjonsform") or {}).get("beskrivelse", "—"))
         col3.metric("Kommune", (company.get("forretningsadresse") or {}).get("kommune", "—"))
 
-        if st.button("Hent tilgjengelige år ▶", type="secondary"):
-            with st.spinner("Sjekker Regnskapsregisteret…"):
-                try:
-                    st.session_state.years         = get_available_years(orgnr)
-                    st.session_state.selected_orgnr = orgnr
-                    st.session_state.pdf_bytes      = None
-                    st.session_state.zip_bytes      = None
-                except Exception as e:
-                    st.error(f"Feil: {e}")
+        # ── 3. Auto-load years ────────────────────────────────────────────────
 
-# ── 3. Year picker + download ─────────────────────────────────────────────────
+        with st.spinner("Henter tilgjengelige år…"):
+            try:
+                years = get_available_years(orgnr)
+            except Exception as e:
+                st.error(f"Feil ved henting av år: {e}")
+                years = []
 
-if st.session_state.years is not None:
-    years  = st.session_state.years
-    orgnr  = st.session_state.selected_orgnr
+        if not years:
+            st.warning("Ingen årsregnskap funnet for denne virksomheten.")
+        else:
+            st.success(f"Tilgjengelige år: {', '.join(sorted(years))}")
+            st.divider()
 
-    if not years:
-        st.warning("Ingen årsregnskap funnet for denne virksomheten.")
-    else:
-        st.success(f"Tilgjengelige år: {', '.join(sorted(years))}")
-        st.divider()
+            year = st.selectbox("Velg år", sorted(years, reverse=True), key="year_select")
 
-        year = st.selectbox("Velg år", sorted(years, reverse=True), key="year_select")
+            col_a, col_b = st.columns(2)
 
-        col_a, col_b = st.columns(2)
-
-        # --- Single year ---
-        if col_a.button(f"⬇  Hent PDF for {year}", use_container_width=True):
-            with st.spinner(f"Laster ned {year}…"):
-                try:
-                    data = fetch_pdf(orgnr, year)
-                    st.session_state.pdf_bytes  = data
-                    st.session_state.pdf_name   = f"aarsregnskap-{year}_{orgnr}.pdf"
-                    st.session_state.zip_bytes  = None
-                except Exception as e:
-                    st.error(f"Nedlasting feilet: {e}")
-
-        # --- All years as ZIP ---
-        if col_b.button("⬇  Hent alle år (ZIP)", use_container_width=True):
-            buf    = io.BytesIO()
-            errors = []
-            bar    = st.progress(0, text="Starter…")
-            sorted_years = sorted(years)
-            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-                for i, yr in enumerate(sorted_years):
-                    bar.progress((i + 1) / len(sorted_years), text=f"Laster ned {yr}…")
+            # --- Single year ---
+            if col_a.button(f"⬇  Hent PDF for {year}", use_container_width=True):
+                with st.spinner(f"Laster ned {year}…"):
                     try:
-                        data = fetch_pdf(orgnr, yr)
-                        zf.writestr(f"aarsregnskap-{yr}_{orgnr}.pdf", data)
+                        data = fetch_pdf(orgnr, year)
+                        st.session_state.pdf_bytes = data
+                        st.session_state.pdf_name  = f"aarsregnskap-{year}_{orgnr}.pdf"
+                        st.session_state.zip_bytes = None
                     except Exception as e:
-                        errors.append(f"{yr}: {e}")
-            bar.empty()
-            if errors:
-                st.warning("Noen år feilet: " + " | ".join(errors))
-            st.session_state.zip_bytes  = buf.getvalue()
-            st.session_state.zip_name   = f"aarsregnskap_{orgnr}_alle.zip"
-            st.session_state.pdf_bytes  = None
+                        st.error(f"Nedlasting feilet: {e}")
 
-        # --- Download buttons (shown after fetch) ---
-        if st.session_state.pdf_bytes:
-            sz = len(st.session_state.pdf_bytes) // 1024
-            st.download_button(
-                label=f"💾  Last ned {st.session_state.pdf_name}  ({sz} KB)",
-                data=st.session_state.pdf_bytes,
-                file_name=st.session_state.pdf_name,
-                mime="application/pdf",
-                type="primary",
-                use_container_width=True,
-            )
+            # --- All years as ZIP ---
+            if col_b.button("⬇  Hent alle år (ZIP)", use_container_width=True):
+                buf    = io.BytesIO()
+                errors = []
+                bar    = st.progress(0, text="Starter…")
+                sorted_years = sorted(years)
+                with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                    for i, yr in enumerate(sorted_years):
+                        bar.progress((i + 1) / len(sorted_years), text=f"Laster ned {yr}…")
+                        try:
+                            data = fetch_pdf(orgnr, yr)
+                            zf.writestr(f"aarsregnskap-{yr}_{orgnr}.pdf", data)
+                        except Exception as e:
+                            errors.append(f"{yr}: {e}")
+                bar.empty()
+                if errors:
+                    st.warning("Noen år feilet: " + " | ".join(errors))
+                st.session_state.zip_bytes = buf.getvalue()
+                st.session_state.zip_name  = f"aarsregnskap_{orgnr}_alle.zip"
+                st.session_state.pdf_bytes = None
 
-        if st.session_state.zip_bytes:
-            sz = len(st.session_state.zip_bytes) // 1024
-            st.download_button(
-                label=f"💾  Last ned {st.session_state.zip_name}  ({sz} KB)",
-                data=st.session_state.zip_bytes,
-                file_name=st.session_state.zip_name,
-                mime="application/zip",
-                type="primary",
-                use_container_width=True,
-            )
+            # --- Download buttons (shown after fetch) ---
+            if st.session_state.pdf_bytes:
+                sz = len(st.session_state.pdf_bytes) // 1024
+                st.download_button(
+                    label=f"💾  Last ned {st.session_state.pdf_name}  ({sz} KB)",
+                    data=st.session_state.pdf_bytes,
+                    file_name=st.session_state.pdf_name,
+                    mime="application/pdf",
+                    type="primary",
+                    use_container_width=True,
+                )
+
+            if st.session_state.zip_bytes:
+                sz = len(st.session_state.zip_bytes) // 1024
+                st.download_button(
+                    label=f"💾  Last ned {st.session_state.zip_name}  ({sz} KB)",
+                    data=st.session_state.zip_bytes,
+                    file_name=st.session_state.zip_name,
+                    mime="application/zip",
+                    type="primary",
+                    use_container_width=True,
+                )
 
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.divider()
