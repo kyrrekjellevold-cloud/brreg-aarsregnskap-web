@@ -7,6 +7,7 @@ Deploy gratis på https://share.streamlit.io
 """
 
 import io
+import threading
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -48,10 +49,15 @@ def get_available_years(orgnr: str) -> list[str]:
     return [str(y) for y in r.json()]
 
 
-_session = requests.Session()
+_thread_local = threading.local()
+
+def _get_session() -> requests.Session:
+    if not hasattr(_thread_local, "session"):
+        _thread_local.session = requests.Session()
+    return _thread_local.session
 
 def fetch_pdf(orgnr: str, year: str) -> bytes:
-    r = _session.get(
+    r = _get_session().get(
         f"{REGNSKAP_BASE}/{orgnr}/{year}",
         headers={"Accept": "application/octet-stream"},
         timeout=120,
@@ -146,7 +152,7 @@ if st.session_state.companies is not None:
                 done         = 0
                 results      = {}
 
-                with ThreadPoolExecutor(max_workers=4) as pool:
+                with ThreadPoolExecutor(max_workers=6) as pool:
                     futures = {pool.submit(fetch_pdf, orgnr, yr): yr for yr in sorted_years}
                     for future in as_completed(futures):
                         yr = futures[future]
@@ -158,7 +164,7 @@ if st.session_state.companies is not None:
                         bar.progress(done / len(sorted_years), text=f"{done}/{len(sorted_years)} ferdig…")
 
                 bar.empty()
-                with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
                     for yr in sorted_years:
                         if yr in results:
                             zf.writestr(f"aarsregnskap-{yr}_{orgnr}.pdf", results[yr])
