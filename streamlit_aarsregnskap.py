@@ -6,6 +6,9 @@ Søk etter virksomhet og last ned årsregnskap-PDF-er direkte fra Brreg.
 Deploy gratis på https://share.streamlit.io
 """
 
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 import requests
 import streamlit as st
 
@@ -44,8 +47,15 @@ def get_available_years(orgnr: str) -> list[str]:
     return [str(y) for y in r.json()]
 
 
+_thread_local = threading.local()
+
+def _get_session() -> requests.Session:
+    if not hasattr(_thread_local, "session"):
+        _thread_local.session = requests.Session()
+    return _thread_local.session
+
 def fetch_pdf(orgnr: str, year: str) -> bytes:
-    r = requests.get(
+    r = _get_session().get(
         f"{REGNSKAP_BASE}/{orgnr}/{year}",
         headers={"Accept": "application/octet-stream"},
         timeout=120,
@@ -60,7 +70,7 @@ st.title("📄 Brreg Årsregnskap")
 st.caption("Søk etter virksomhet og last ned årsregnskap-PDF-er fra Brønnøysundregistrene")
 
 # Initialise session state
-for key in ("companies", "pdf_bytes", "pdf_name"):
+for key in ("companies", "all_pdfs"):
     if key not in st.session_state:
         st.session_state[key] = None
 
@@ -74,7 +84,7 @@ if submitted and query.strip():
     with st.spinner("Søker…"):
         try:
             st.session_state.companies = search_companies(query.strip())
-            st.session_state.pdf_bytes = None
+            st.session_state.all_pdfs = None
         except Exception as e:
             st.error(f"Søkefeil: {e}")
 
@@ -115,27 +125,47 @@ if st.session_state.companies is not None:
             st.success(f"Tilgjengelige år: {', '.join(sorted(years))}")
             st.divider()
 
-            year = st.selectbox("Velg år", sorted(years, reverse=True), key="year_select")
+            # ── 4. Download all years in parallel ─────────────────────────────
 
-            if st.button(f"⬇  Hent PDF for {year}", use_container_width=True, type="primary"):
-                with st.spinner(f"Laster ned {year}…"):
-                    try:
-                        data = fetch_pdf(orgnr, year)
-                        st.session_state.pdf_bytes = data
-                        st.session_state.pdf_name  = f"aarsregnskap-{year}_{orgnr}.pdf"
-                    except Exception as e:
-                        st.error(f"Nedlasting feilet: {e}")
+            if st.button("⬇  Last ned alle år", use_container_width=True, type="primary"):
+                sorted_years = sorted(years)
+                bar    = st.progress(0, text="Laster ned…")
+                done   = 0
+                results = {}
+                errors  = []
 
-            if st.session_state.pdf_bytes:
-                sz = len(st.session_state.pdf_bytes) // 1024
-                st.download_button(
-                    label=f"💾  Last ned {st.session_state.pdf_name}  ({sz} KB)",
-                    data=st.session_state.pdf_bytes,
-                    file_name=st.session_state.pdf_name,
-                    mime="application/pdf",
-                    type="primary",
-                    use_container_width=True,
-                )
+                with ThreadPoolExecutor(max_workers=len(sorted_years)) as pool:
+                    futures = {pool.submit(fetch_pdf, orgnr, yr): yr for yr in sorted_years}
+                    for future in as_completed(futures):
+                        yr = futures[future]
+                        try:
+                            results[yr] = future.result()
+                        except Exception as e:
+                            errors.append(f"{yr}: {e}")
+                        done += 1
+                        bar.progress(done / len(sorted_years), text=f"{done}/{len(sorted_years)} ferdig…")
+
+                bar.empty()
+                if errors:
+                    st.warning("Noen år feilet: " + " | ".join(errors))
+                st.session_state.all_pdfs = results
+
+            # ── 5. Show individual download buttons ───────────────────────────
+
+            if st.session_state.all_pdfs:
+                pdfs = st.session_state.all_pdfs
+                for yr in sorted(pdfs.keys(), reverse=True):
+                    data = pdfs[yr]
+                    sz   = len(data) // 1024
+                    fname = f"aarsregnskap-{yr}_{orgnr}.pdf"
+                    st.download_button(
+                        label=f"💾  {yr}  ({sz} KB)",
+                        data=data,
+                        file_name=fname,
+                        mime="application/pdf",
+                        use_container_width=True,
+                        key=f"dl_{yr}",
+                    )
 
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.divider()
