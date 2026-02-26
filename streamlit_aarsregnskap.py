@@ -6,13 +6,13 @@ Søk etter virksomhet og last ned årsregnskap-PDF-er direkte fra Brreg.
 Deploy gratis på https://share.streamlit.io
 """
 
-import base64
+import io
 import threading
+import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 import streamlit as st
-import streamlit.components.v1 as components
 
 st.set_page_config(
     page_title="Brreg Årsregnskap",
@@ -102,6 +102,7 @@ if st.session_state.companies is not None:
         )
         company = companies[idx]
         orgnr   = company["organisasjonsnummer"]
+        navn    = company["navn"]
 
         col1, col2, col3 = st.columns(3)
         col1.metric("Org.nr.", orgnr)
@@ -123,12 +124,33 @@ if st.session_state.companies is not None:
             st.success(f"Tilgjengelige år: {', '.join(sorted(years))}")
             st.divider()
 
-            # ── 4. Fetch all in parallel, push to browser Downloads ───────────
+            col_a, col_b = st.columns(2)
 
-            if st.button("⬇  Last ned alle år", use_container_width=True, type="primary"):
+            # ── Single year ───────────────────────────────────────────────────
+
+            year = col_a.selectbox("Velg år", sorted(years, reverse=True))
+
+            if col_a.button("⬇  Hent PDF", use_container_width=True):
+                with st.spinner(f"Laster ned {year}…"):
+                    try:
+                        data = fetch_pdf(orgnr, year)
+                        col_a.download_button(
+                            label=f"💾  Last ned {year}",
+                            data=data,
+                            file_name=f"aarsregnskap-{year}_{orgnr}.pdf",
+                            mime="application/pdf",
+                            use_container_width=True,
+                        )
+                    except Exception as e:
+                        st.error(f"Nedlasting feilet: {e}")
+
+            # ── All years as ZIP (parallel) ───────────────────────────────────
+
+            col_b.markdown("**Alle år**")
+            if col_b.button("⬇  Last ned alle (ZIP)", use_container_width=True, type="primary"):
                 sorted_years = sorted(years)
-                bar    = st.progress(0, text="Laster ned…")
-                done   = 0
+                bar     = st.progress(0, text="Laster ned…")
+                done    = 0
                 results = {}
                 errors  = []
 
@@ -146,38 +168,24 @@ if st.session_state.companies is not None:
                 bar.empty()
 
                 if results:
-                    # Build JS that triggers one browser download per PDF,
-                    # staggered so the browser doesn't block them.
-                    js_parts = []
-                    for i, yr in enumerate(sorted(results.keys())):
-                        b64  = base64.b64encode(results[yr]).decode("ascii")
-                        fname = f"aarsregnskap-{yr}_{orgnr}.pdf"
-                        js_parts.append(f"""
-                            setTimeout(function() {{
-                                var b = atob("{b64}");
-                                var u = new Uint8Array(b.length);
-                                for (var k = 0; k < b.length; k++) u[k] = b.charCodeAt(k);
-                                var blob = new Blob([u], {{type: "application/pdf"}});
-                                var url  = URL.createObjectURL(blob);
-                                var a    = document.createElement("a");
-                                a.href     = url;
-                                a.download = "{fname}";
-                                document.body.appendChild(a);
-                                a.click();
-                                document.body.removeChild(a);
-                                URL.revokeObjectURL(url);
-                            }}, {i * 600});
-                        """)
+                    buf = io.BytesIO()
+                    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
+                        for yr in sorted(results):
+                            zf.writestr(f"aarsregnskap-{yr}_{orgnr}.pdf", results[yr])
 
-                    components.html(
-                        f"<script>{''.join(js_parts)}</script>",
-                        height=1,
+                    safe_navn = "".join(c for c in navn if c.isalnum() or c in " _-").strip()
+                    st.download_button(
+                        label=f"💾  Last ned {safe_navn} – alle år ({len(results)} PDF-er)",
+                        data=buf.getvalue(),
+                        file_name=f"aarsregnskap_{orgnr}_alle.zip",
+                        mime="application/zip",
+                        type="primary",
+                        use_container_width=True,
                     )
-                    st.success(f"✅  {len(results)} PDF-er lastes ned til din nedlastingsmappe")
 
                 if errors:
                     st.warning("Noen år feilet: " + " | ".join(errors))
 
-# ── Footer ────────────────────────────────────────────────────────────────────
+# ── Footer ──────────────���─────────────────────────────────────────────────────
 st.divider()
 st.caption("Data fra [Brønnøysundregistrene](https://www.brreg.no) · Åpen API")
