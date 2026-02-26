@@ -8,6 +8,7 @@ Deploy gratis på https://share.streamlit.io
 
 import io
 import zipfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 import streamlit as st
@@ -47,8 +48,10 @@ def get_available_years(orgnr: str) -> list[str]:
     return [str(y) for y in r.json()]
 
 
+_session = requests.Session()
+
 def fetch_pdf(orgnr: str, year: str) -> bytes:
-    r = requests.get(
+    r = _session.get(
         f"{REGNSKAP_BASE}/{orgnr}/{year}",
         headers={"Accept": "application/octet-stream"},
         timeout=120,
@@ -134,21 +137,31 @@ if st.session_state.companies is not None:
                     except Exception as e:
                         st.error(f"Nedlasting feilet: {e}")
 
-            # --- All years as ZIP ---
+            # --- All years as ZIP (parallel download) ---
             if col_b.button("⬇  Hent alle år (ZIP)", use_container_width=True):
-                buf    = io.BytesIO()
-                errors = []
-                bar    = st.progress(0, text="Starter…")
+                buf          = io.BytesIO()
+                errors       = []
                 sorted_years = sorted(years)
-                with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-                    for i, yr in enumerate(sorted_years):
-                        bar.progress((i + 1) / len(sorted_years), text=f"Laster ned {yr}…")
+                bar          = st.progress(0, text="Laster ned…")
+                done         = 0
+                results      = {}
+
+                with ThreadPoolExecutor(max_workers=4) as pool:
+                    futures = {pool.submit(fetch_pdf, orgnr, yr): yr for yr in sorted_years}
+                    for future in as_completed(futures):
+                        yr = futures[future]
                         try:
-                            data = fetch_pdf(orgnr, yr)
-                            zf.writestr(f"aarsregnskap-{yr}_{orgnr}.pdf", data)
+                            results[yr] = future.result()
                         except Exception as e:
                             errors.append(f"{yr}: {e}")
+                        done += 1
+                        bar.progress(done / len(sorted_years), text=f"{done}/{len(sorted_years)} ferdig…")
+
                 bar.empty()
+                with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                    for yr in sorted_years:
+                        if yr in results:
+                            zf.writestr(f"aarsregnskap-{yr}_{orgnr}.pdf", results[yr])
                 if errors:
                     st.warning("Noen år feilet: " + " | ".join(errors))
                 st.session_state.zip_bytes = buf.getvalue()
