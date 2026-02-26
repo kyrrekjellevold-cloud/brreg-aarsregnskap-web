@@ -25,18 +25,17 @@ REGNSKAP_BASE = "https://data.brreg.no/regnskapsregisteret/regnskap/aarsregnskap
 
 # ── API helpers ───────────────────────────────────────────────────────────────
 
-@st.cache_data(ttl=600, show_spinner=False)
 def search_companies(query: str) -> list[dict]:
     r = requests.get(
         ENHETER_URL,
-        params={"navn": query, "size": 20, "sort": "navn,asc"},
+        params={"navn": query, "size": 20},
+        headers={"Accept": "application/json"},
         timeout=10,
     )
     r.raise_for_status()
     return r.json().get("_embedded", {}).get("enheter", [])
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
 def get_available_years(orgnr: str) -> list[str]:
     r = requests.get(
         f"{REGNSKAP_BASE}/{orgnr}/aar",
