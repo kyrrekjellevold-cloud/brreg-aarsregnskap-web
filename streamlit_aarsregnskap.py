@@ -125,15 +125,10 @@ if st.session_state.companies is not None:
             st.success(f"Tilgjengelige år: {', '.join(sorted(years))}")
             st.divider()
 
-            # Folder path — defaults to ~/Downloads/<navn>
-            safe_navn = "".join(c for c in navn if c.isalnum() or c in " _-").strip()
-            default_folder = str(Path.home() / "Downloads" / safe_navn)
-            folder_input = st.text_input("Lagre i mappe", value=default_folder)
-
-            # ── 4. Download all years in parallel, save directly to folder ────
+            # ── 4. Download all years in parallel, save directly to Downloads ──
 
             if st.button("⬇  Last ned alle år", use_container_width=True, type="primary"):
-                save_dir = Path(folder_input).expanduser()
+                save_dir = Path.home() / "Downloads"
                 save_dir.mkdir(parents=True, exist_ok=True)
 
                 sorted_years = sorted(years)
