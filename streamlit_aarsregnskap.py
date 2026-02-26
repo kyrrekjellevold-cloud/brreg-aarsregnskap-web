@@ -103,8 +103,8 @@ if st.session_state.companies is not None:
         # Mini info card
         col1, col2, col3 = st.columns(3)
         col1.metric("Org.nr.", orgnr)
-        col2.metric("Form", company.get("organisasjonsform", {}).get("beskrivelse", "—"))
-        col3.metric("Kommune", company.get("forretningsadresse", {}).get("kommune", "—"))
+        col2.metric("Form", (company.get("organisasjonsform") or {}).get("beskrivelse", "—"))
+        col3.metric("Kommune", (company.get("forretningsadresse") or {}).get("kommune", "—"))
 
         if st.button("Hent tilgjengelige år ▶", type="secondary"):
             with st.spinner("Sjekker Regnskapsregisteret…"):
