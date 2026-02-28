@@ -7,12 +7,15 @@ Deploy gratis på https://share.streamlit.io
 """
 
 import io
+import json
 import threading
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+import pandas as pd
 import requests
 import streamlit as st
+from mistralai import Mistral
 
 st.set_page_config(
     page_title="Brreg Årsregnskap",
@@ -76,6 +79,54 @@ def fetch_pdf(orgnr: str, year: str) -> bytes:
     )
     r.raise_for_status()
     return r.content
+
+
+# ── Mistral OCR helpers ───────────────────────────────────────────────────────
+
+def _mistral_client() -> Mistral:
+    return Mistral(api_key=st.secrets["MISTRAL_API_KEY"])
+
+
+def ocr_pdf(pdf_bytes: bytes, filename: str = "document.pdf") -> str:
+    client = _mistral_client()
+    uploaded = client.files.upload(
+        file={"file_name": filename, "content": pdf_bytes},
+        purpose="ocr",
+    )
+    try:
+        signed = client.files.get_signed_url(file_id=uploaded.id)
+        result = client.ocr.process(
+            model="mistral-ocr-latest",
+            document={"type": "document_url", "document_url": signed.url},
+        )
+        return "\n\n".join(page.markdown for page in result.pages)
+    finally:
+        client.files.delete(file_id=uploaded.id)
+
+
+def extract_financials(ocr_text: str) -> dict:
+    client = _mistral_client()
+    prompt = (
+        "Du er en norsk regnskapsekspert. Analyser følgende OCR-tekst fra et norsk årsregnskap "
+        "og returner et JSON-objekt med disse feltene (tall i hele kroner, null hvis ikke funnet):\n"
+        "- driftsinntekter\n"
+        "- driftsresultat\n"
+        "- aarsresultat\n"
+        "- sum_eiendeler\n"
+        "- sum_egenkapital\n"
+        "- sum_gjeld\n\n"
+        "Returner KUN gyldig JSON, ingen forklaring.\n\n"
+        f"Regnskapstekst:\n{ocr_text[:12000]}"
+    )
+    resp = client.chat.complete(
+        model="mistral-small-latest",
+        messages=[{"role": "user", "content": prompt}],
+        response_format={"type": "json_object"},
+    )
+    try:
+        return json.loads(resp.choices[0].message.content)
+    except Exception:
+        return {}
 
 
 # ── Page ─────────────────────────────────────────────────────────────────────
@@ -202,6 +253,61 @@ if st.session_state.companies is not None:
 
                 if errors:
                     st.warning("Noen år feilet: " + " | ".join(errors))
+
+            # ── OCR + Excel extraction ────────────────────────────────────────
+
+            st.divider()
+            st.subheader("Ekstraher regnskapsdata til Excel")
+            st.caption(
+                "Bruker Mistral OCR til å lese PDF-ene og trekke ut nøkkeltall. "
+                "Kan ta litt tid — ca. 15–30 sek per år."
+            )
+
+            if "MISTRAL_API_KEY" not in st.secrets:
+                st.warning("Mistral API-nøkkel mangler. Legg til `MISTRAL_API_KEY` i Streamlit Secrets.")
+            elif st.button("📊  Ekstraher og last ned Excel", use_container_width=True, type="primary"):
+                sorted_years = sorted(years)
+                bar  = st.progress(0, text="Starter…")
+                rows = []
+                errs = []
+
+                for i, yr in enumerate(sorted_years, 1):
+                    bar.progress((i - 1) / len(sorted_years), text=f"Behandler {yr} ({i}/{len(sorted_years)})…")
+                    try:
+                        pdf_bytes = fetch_pdf(orgnr, yr)
+                        ocr_text  = ocr_pdf(pdf_bytes, filename=f"aarsregnskap-{yr}-{orgnr}.pdf")
+                        data      = extract_financials(ocr_text)
+                        rows.append({
+                            "År":               int(yr),
+                            "Driftsinntekter":  data.get("driftsinntekter"),
+                            "Driftsresultat":   data.get("driftsresultat"),
+                            "Årsresultat":      data.get("aarsresultat"),
+                            "Sum eiendeler":    data.get("sum_eiendeler"),
+                            "Sum egenkapital":  data.get("sum_egenkapital"),
+                            "Sum gjeld":        data.get("sum_gjeld"),
+                        })
+                    except Exception as e:
+                        errs.append(f"{yr}: {e}")
+
+                bar.progress(1.0, text="Ferdig!")
+
+                if rows:
+                    df = pd.DataFrame(rows).sort_values("År").reset_index(drop=True)
+                    excel_buf = io.BytesIO()
+                    with pd.ExcelWriter(excel_buf, engine="openpyxl") as writer:
+                        df.to_excel(writer, index=False, sheet_name="Årsregnskap")
+                    safe_navn = "".join(c for c in navn if c.isalnum() or c in " _-").strip()
+                    st.download_button(
+                        label=f"💾  Last ned {safe_navn} – regnskapsdata.xlsx",
+                        data=excel_buf.getvalue(),
+                        file_name=f"regnskap_{orgnr}_{safe_navn}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True,
+                    )
+                    st.dataframe(df, use_container_width=True)
+
+                if errs:
+                    st.warning("Noen år feilet: " + " | ".join(errs))
 
 # ── Footer ──────────────���─────────────────────────────────────────────────────
 st.divider()
