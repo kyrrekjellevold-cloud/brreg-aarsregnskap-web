@@ -37,6 +37,18 @@ def search_companies(query: str) -> list[dict]:
     return r.json().get("_embedded", {}).get("enheter", [])
 
 
+def search_by_orgnr(orgnr: str) -> list[dict]:
+    r = requests.get(
+        f"{ENHETER_URL}/{orgnr}",
+        headers={"Accept": "application/json"},
+        timeout=10,
+    )
+    if r.status_code == 404:
+        return []
+    r.raise_for_status()
+    return [r.json()]
+
+
 def get_available_years(orgnr: str) -> list[str]:
     r = requests.get(
         f"{REGNSKAP_BASE}/{orgnr}/aar",
@@ -77,13 +89,18 @@ if "companies" not in st.session_state:
 # ── 1. Search ─────────────────────────────────────────────────────────────────
 
 with st.form("search_form"):
-    query = st.text_input("Virksomhetsnavn", placeholder="f.eks. Equinor, DNB, Aker…")
+    query = st.text_input("Virksomhetsnavn eller org.nr.", placeholder="f.eks. Equinor, DNB, Aker… eller 123456789")
     submitted = st.form_submit_button("🔍  Søk", type="primary")
 
 if submitted and query.strip():
     with st.spinner("Søker…"):
         try:
-            st.session_state.companies = search_companies(query.strip())
+            q = query.strip()
+            digits_only = q.replace(" ", "").replace("-", "")
+            if digits_only.isdigit() and len(digits_only) == 9:
+                st.session_state.companies = search_by_orgnr(digits_only)
+            else:
+                st.session_state.companies = search_companies(q)
         except Exception as e:
             st.error(f"Søkefeil: {e}")
 
