@@ -108,12 +108,31 @@ def extract_financials(ocr_text: str) -> dict:
     client = _mistral_client()
     prompt = (
         "Du er en norsk regnskapsekspert. Analyser følgende OCR-tekst fra et norsk årsregnskap "
-        "og returner et JSON-objekt med disse feltene (tall i hele kroner, null hvis ikke funnet):\n"
+        "og returner et JSON-objekt med disse feltene (tall i hele kroner som heltall, null hvis ikke funnet):\n\n"
+        "RESULTATREGNSKAP:\n"
+        "- salgsinntekter\n"
         "- driftsinntekter\n"
+        "- varekostnad\n"
+        "- lønnskostnad\n"
+        "- avskrivninger\n"
+        "- andre_driftskostnader\n"
+        "- sum_driftskostnader\n"
         "- driftsresultat\n"
-        "- aarsresultat\n"
-        "- sum_eiendeler\n"
+        "- finansinntekter\n"
+        "- finanskostnader\n"
+        "- resultat_for_skatt\n"
+        "- skattekostnad\n"
+        "- aarsresultat\n\n"
+        "BALANSE — EIENDELER:\n"
+        "- anleggsmidler\n"
+        "- omlopsmidler\n"
+        "- sum_eiendeler\n\n"
+        "BALANSE — EGENKAPITAL OG GJELD:\n"
+        "- innskutt_egenkapital\n"
+        "- opptjent_egenkapital\n"
         "- sum_egenkapital\n"
+        "- langsiktig_gjeld\n"
+        "- kortsiktig_gjeld\n"
         "- sum_gjeld\n\n"
         "Returner KUN gyldig JSON, ingen forklaring.\n\n"
         f"Regnskapstekst:\n{ocr_text[:12000]}"
@@ -278,13 +297,32 @@ if st.session_state.companies is not None:
                         ocr_text  = ocr_pdf(pdf_bytes, filename=f"aarsregnskap-{yr}-{orgnr}.pdf")
                         data      = extract_financials(ocr_text)
                         rows.append({
-                            "År":               int(yr),
-                            "Driftsinntekter":  data.get("driftsinntekter"),
-                            "Driftsresultat":   data.get("driftsresultat"),
-                            "Årsresultat":      data.get("aarsresultat"),
-                            "Sum eiendeler":    data.get("sum_eiendeler"),
-                            "Sum egenkapital":  data.get("sum_egenkapital"),
-                            "Sum gjeld":        data.get("sum_gjeld"),
+                            "År":                    int(yr),
+                            # Resultatregnskap
+                            "Salgsinntekter":         data.get("salgsinntekter"),
+                            "Driftsinntekter":        data.get("driftsinntekter"),
+                            "Varekostnad":            data.get("varekostnad"),
+                            "Lønnskostnad":           data.get("lønnskostnad"),
+                            "Avskrivninger":          data.get("avskrivninger"),
+                            "Andre driftskostnader":  data.get("andre_driftskostnader"),
+                            "Sum driftskostnader":    data.get("sum_driftskostnader"),
+                            "Driftsresultat":         data.get("driftsresultat"),
+                            "Finansinntekter":        data.get("finansinntekter"),
+                            "Finanskostnader":        data.get("finanskostnader"),
+                            "Resultat før skatt":     data.get("resultat_for_skatt"),
+                            "Skattekostnad":          data.get("skattekostnad"),
+                            "Årsresultat":            data.get("aarsresultat"),
+                            # Balanse — eiendeler
+                            "Anleggsmidler":          data.get("anleggsmidler"),
+                            "Omløpsmidler":           data.get("omlopsmidler"),
+                            "Sum eiendeler":          data.get("sum_eiendeler"),
+                            # Balanse — egenkapital og gjeld
+                            "Innskutt egenkapital":   data.get("innskutt_egenkapital"),
+                            "Opptjent egenkapital":   data.get("opptjent_egenkapital"),
+                            "Sum egenkapital":        data.get("sum_egenkapital"),
+                            "Langsiktig gjeld":       data.get("langsiktig_gjeld"),
+                            "Kortsiktig gjeld":       data.get("kortsiktig_gjeld"),
+                            "Sum gjeld":              data.get("sum_gjeld"),
                         })
                     except Exception as e:
                         errs.append(f"{yr}: {e}")
