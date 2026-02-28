@@ -108,7 +108,8 @@ def extract_financials(ocr_text: str) -> dict:
     client = _mistral_client()
     prompt = (
         "Du er en norsk regnskapsekspert. Analyser følgende OCR-tekst fra et norsk årsregnskap "
-        "og returner et JSON-objekt med disse feltene (tall i hele kroner som heltall, null hvis ikke funnet):\n\n"
+        "og returner et JSON-objekt med disse feltene (tall i hele kroner som heltall uten punktum/mellomrom, "
+        "null hvis ikke funnet). Norske tall bruker punktum som tusenskilletegn — fjern disse.\n\n"
         "RESULTATREGNSKAP:\n"
         "- salgsinntekter\n"
         "- driftsinntekter\n"
@@ -135,10 +136,10 @@ def extract_financials(ocr_text: str) -> dict:
         "- kortsiktig_gjeld\n"
         "- sum_gjeld\n\n"
         "Returner KUN gyldig JSON, ingen forklaring.\n\n"
-        f"Regnskapstekst:\n{ocr_text[:12000]}"
+        f"Regnskapstekst:\n{ocr_text[:40000]}"
     )
     resp = client.chat.complete(
-        model="mistral-small-latest",
+        model="mistral-large-latest",
         messages=[{"role": "user", "content": prompt}],
         response_format={"type": "json_object"},
     )
