@@ -1,5 +1,5 @@
 streamlit
 requests
-mistralai
+anthropic
 pandas
 openpyxl

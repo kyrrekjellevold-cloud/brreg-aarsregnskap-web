@@ -6,16 +6,17 @@ Søk etter virksomhet og last ned årsregnskap-PDF-er direkte fra Brreg.
 Deploy gratis på https://share.streamlit.io
 """
 
+import base64
 import io
 import json
 import threading
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+import anthropic
 import pandas as pd
 import requests
 import streamlit as st
-from mistralai import Mistral
 
 st.set_page_config(
     page_title="Brreg Årsregnskap",
@@ -81,56 +82,13 @@ def fetch_pdf(orgnr: str, year: str) -> bytes:
     return r.content
 
 
-# ── Mistral OCR helpers ───────────────────────────────────────────────────────
+# ── Claude PDF extraction ─────────────────────────────────────────────────────
 
-def _mistral_client() -> Mistral:
-    return Mistral(api_key=st.secrets["MISTRAL_API_KEY"])
-
-
-def ocr_pdf(pdf_bytes: bytes, filename: str = "document.pdf") -> str:
-    client = _mistral_client()
-    uploaded = client.files.upload(
-        file={"file_name": filename, "content": pdf_bytes},
-        purpose="ocr",
-    )
-    try:
-        signed = client.files.get_signed_url(file_id=uploaded.id)
-        result = client.ocr.process(
-            model="mistral-ocr-latest",
-            document={"type": "document_url", "document_url": signed.url},
-        )
-        return "\n\n".join(page.markdown for page in result.pages)
-    finally:
-        client.files.delete(file_id=uploaded.id)
-
-
-def _extract_financial_sections(ocr_text: str, max_chars: int = 40000) -> str:
-    """Return the portion of OCR text most likely to contain financial tables."""
-    lower = ocr_text.lower()
-    anchors = [
-        "resultatregnskap", "resultat regnskap",
-        "driftsinntekt", "salgsinntekt",
-        "balanse", "eiendeler",
-    ]
-    start = len(ocr_text)
-    for kw in anchors:
-        idx = lower.find(kw)
-        if idx != -1:
-            start = min(start, idx)
-    if start == len(ocr_text):
-        # No anchors found — fall back to beginning
-        start = 0
-    # Include a little context before the first anchor
-    start = max(0, start - 200)
-    return ocr_text[start : start + max_chars]
-
-
-def extract_financials(ocr_text: str) -> dict:
-    client   = _mistral_client()
-    section  = _extract_financial_sections(ocr_text)
+def extract_financials_from_pdf(pdf_bytes: bytes) -> dict:
+    client = anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
     prompt = (
-        "Du er en norsk regnskapsekspert. Analyser følgende OCR-tekst fra et norsk årsregnskap "
-        "og returner et JSON-objekt med disse feltene (tall i hele kroner som heltall uten punktum/mellomrom, "
+        "Du er en norsk regnskapsekspert. Les dette årsregnskapet og returner et JSON-objekt "
+        "med disse feltene (tall i hele kroner som heltall uten punktum/mellomrom, "
         "null hvis ikke funnet). Norske tall bruker punktum som tusenskilletegn — fjern disse.\n\n"
         "RESULTATREGNSKAP:\n"
         "- salgsinntekter\n"
@@ -157,16 +115,34 @@ def extract_financials(ocr_text: str) -> dict:
         "- langsiktig_gjeld\n"
         "- kortsiktig_gjeld\n"
         "- sum_gjeld\n\n"
-        "Returner KUN gyldig JSON, ingen forklaring.\n\n"
-        f"Regnskapstekst:\n{section}"
+        "Returner KUN gyldig JSON, ingen forklaring, ingen kodeblokk."
     )
-    resp = client.chat.complete(
-        model="mistral-large-latest",
-        messages=[{"role": "user", "content": prompt}],
-        response_format={"type": "json_object"},
+    message = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=1024,
+        messages=[{
+            "role": "user",
+            "content": [
+                {
+                    "type": "document",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "application/pdf",
+                        "data": base64.standard_b64encode(pdf_bytes).decode("utf-8"),
+                    },
+                },
+                {"type": "text", "text": prompt},
+            ],
+        }],
     )
+    text = message.content[0].text.strip()
+    # Strip markdown code fences if present
+    if text.startswith("```"):
+        text = text.split("```")[1]
+        if text.startswith("json"):
+            text = text[4:]
     try:
-        return json.loads(resp.choices[0].message.content)
+        return json.loads(text)
     except Exception:
         return {}
 
@@ -305,8 +281,8 @@ if st.session_state.companies is not None:
                 "Kan ta litt tid — ca. 15–30 sek per år."
             )
 
-            if "MISTRAL_API_KEY" not in st.secrets:
-                st.warning("Mistral API-nøkkel mangler. Legg til `MISTRAL_API_KEY` i Streamlit Secrets.")
+            if "ANTHROPIC_API_KEY" not in st.secrets:
+                st.warning("Anthropic API-nøkkel mangler. Legg til `ANTHROPIC_API_KEY` i Streamlit Secrets.")
             elif st.button("📊  Ekstraher og last ned Excel", use_container_width=True, type="primary"):
                 sorted_years = sorted(years)
                 bar  = st.progress(0, text="Starter…")
@@ -317,8 +293,7 @@ if st.session_state.companies is not None:
                     bar.progress((i - 1) / len(sorted_years), text=f"Behandler {yr} ({i}/{len(sorted_years)})…")
                     try:
                         pdf_bytes = fetch_pdf(orgnr, yr)
-                        ocr_text  = ocr_pdf(pdf_bytes, filename=f"aarsregnskap-{yr}-{orgnr}.pdf")
-                        data      = extract_financials(ocr_text)
+                        data      = extract_financials_from_pdf(pdf_bytes)
                         rows.append({
                             "År":                    int(yr),
                             # Resultatregnskap
