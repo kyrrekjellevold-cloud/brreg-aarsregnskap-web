@@ -123,7 +123,7 @@ def extract_financials_from_pdf(pdf_bytes: bytes, retries: int = 3) -> dict:
     for attempt in range(retries):
         try:
             message = client.messages.create(
-                model="claude-sonnet-4-6",
+                model="claude-haiku-4-5-20251001",
                 max_tokens=1024,
                 messages=[{
                     "role": "user",
@@ -148,7 +148,7 @@ def extract_financials_from_pdf(pdf_bytes: bytes, retries: int = 3) -> dict:
             return json.loads(text)
         except anthropic.RateLimitError:
             if attempt < retries - 1:
-                time.sleep(2 ** attempt)
+                time.sleep(30 * (attempt + 1))  # 30s, 60s, 90s
             else:
                 raise
         except json.JSONDecodeError:
@@ -303,17 +303,13 @@ if st.session_state.companies is not None:
                     pdf_bytes = fetch_pdf(orgnr, yr)
                     return yr, extract_financials_from_pdf(pdf_bytes)
 
-                with ThreadPoolExecutor(max_workers=min(3, len(sorted_years))) as pool:
-                    futures = {pool.submit(_fetch_and_extract, yr): yr for yr in sorted_years}
-                    for future in as_completed(futures):
-                        yr = futures[future]
-                        try:
-                            _, data = future.result()
-                            results[yr] = data
-                        except Exception as e:
-                            errs.append(f"{yr}: {e}")
-                        done += 1
-                        bar.progress(done / len(sorted_years), text=f"{done}/{len(sorted_years)} ferdig…")
+                for i, yr in enumerate(sorted_years):
+                    bar.progress(i / len(sorted_years), text=f"Behandler {yr} ({i + 1}/{len(sorted_years)})…")
+                    try:
+                        results[yr] = _fetch_and_extract(yr)[1]
+                    except Exception as e:
+                        errs.append(f"{yr}: {e}")
+                    done += 1
 
                 rows = []
                 for yr in sorted_years:
