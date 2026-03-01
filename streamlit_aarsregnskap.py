@@ -104,8 +104,30 @@ def ocr_pdf(pdf_bytes: bytes, filename: str = "document.pdf") -> str:
         client.files.delete(file_id=uploaded.id)
 
 
+def _extract_financial_sections(ocr_text: str, max_chars: int = 40000) -> str:
+    """Return the portion of OCR text most likely to contain financial tables."""
+    lower = ocr_text.lower()
+    anchors = [
+        "resultatregnskap", "resultat regnskap",
+        "driftsinntekt", "salgsinntekt",
+        "balanse", "eiendeler",
+    ]
+    start = len(ocr_text)
+    for kw in anchors:
+        idx = lower.find(kw)
+        if idx != -1:
+            start = min(start, idx)
+    if start == len(ocr_text):
+        # No anchors found — fall back to beginning
+        start = 0
+    # Include a little context before the first anchor
+    start = max(0, start - 200)
+    return ocr_text[start : start + max_chars]
+
+
 def extract_financials(ocr_text: str) -> dict:
-    client = _mistral_client()
+    client   = _mistral_client()
+    section  = _extract_financial_sections(ocr_text)
     prompt = (
         "Du er en norsk regnskapsekspert. Analyser følgende OCR-tekst fra et norsk årsregnskap "
         "og returner et JSON-objekt med disse feltene (tall i hele kroner som heltall uten punktum/mellomrom, "
@@ -136,7 +158,7 @@ def extract_financials(ocr_text: str) -> dict:
         "- kortsiktig_gjeld\n"
         "- sum_gjeld\n\n"
         "Returner KUN gyldig JSON, ingen forklaring.\n\n"
-        f"Regnskapstekst:\n{ocr_text[:40000]}"
+        f"Regnskapstekst:\n{section}"
     )
     resp = client.chat.complete(
         model="mistral-large-latest",
