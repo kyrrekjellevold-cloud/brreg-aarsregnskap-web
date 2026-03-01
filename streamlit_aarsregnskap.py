@@ -123,7 +123,7 @@ def extract_financials_from_pdf(pdf_bytes: bytes, retries: int = 3) -> dict:
     for attempt in range(retries):
         try:
             message = client.messages.create(
-                model="claude-haiku-4-5-20251001",
+                model="claude-sonnet-4-6",
                 max_tokens=1024,
                 messages=[{
                     "role": "user",
@@ -287,7 +287,7 @@ if st.session_state.companies is not None:
             st.subheader("Ekstraher regnskapsdata til Excel")
             st.caption(
                 "Bruker Claude til å lese PDF-ene og trekke ut nøkkeltall. "
-                "Alle år behandles parallelt — vanligvis ferdig på 10–20 sek totalt."
+                "Behandler ett år om gangen — ca. 10–15 sek per år."
             )
 
             if "ANTHROPIC_API_KEY" not in st.secrets:
@@ -310,6 +310,8 @@ if st.session_state.companies is not None:
                     except Exception as e:
                         errs.append(f"{yr}: {e}")
                     done += 1
+                    if i < len(sorted_years) - 1:
+                        import time; time.sleep(5)
 
                 rows = []
                 for yr in sorted_years:
