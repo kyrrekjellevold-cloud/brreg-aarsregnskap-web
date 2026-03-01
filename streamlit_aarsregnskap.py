@@ -277,8 +277,8 @@ if st.session_state.companies is not None:
             st.divider()
             st.subheader("Ekstraher regnskapsdata til Excel")
             st.caption(
-                "Bruker Mistral OCR til å lese PDF-ene og trekke ut nøkkeltall. "
-                "Kan ta litt tid — ca. 15–30 sek per år."
+                "Bruker Claude til å lese PDF-ene og trekke ut nøkkeltall. "
+                "Kan ta litt tid — ca. 10–20 sek per år."
             )
 
             if "ANTHROPIC_API_KEY" not in st.secrets:
