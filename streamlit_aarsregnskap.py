@@ -148,12 +148,12 @@ def extract_financials_from_pdf(pdf_bytes: bytes, retries: int = 3) -> dict:
             return json.loads(text)
         except anthropic.RateLimitError:
             if attempt < retries - 1:
-                time.sleep(2 ** attempt)  # 1s, 2s, 4s backoff
+                time.sleep(2 ** attempt)
             else:
                 raise
-        except Exception:
+        except json.JSONDecodeError:
             return {}
-    return {}
+        # All other exceptions propagate so the caller can show them
 
 
 # ── Page ─────────────────────────────────────────────────────────────────────
@@ -367,7 +367,9 @@ if st.session_state.companies is not None:
                     st.dataframe(df, use_container_width=True)
 
                 if errs:
-                    st.warning("Noen år feilet: " + " | ".join(errs))
+                    with st.expander(f"⚠️ {len(errs)} år feilet — klikk for detaljer"):
+                        for e in errs:
+                            st.error(e)
 
 # ── Footer ──────────────���─────────────────────────────────────────────────────
 st.divider()
