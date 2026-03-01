@@ -118,7 +118,7 @@ def extract_financials_from_pdf(pdf_bytes: bytes) -> dict:
         "Returner KUN gyldig JSON, ingen forklaring, ingen kodeblokk."
     )
     message = client.messages.create(
-        model="claude-sonnet-4-6",
+        model="claude-haiku-4-5-20251001",
         max_tokens=1024,
         messages=[{
             "role": "user",
@@ -278,52 +278,67 @@ if st.session_state.companies is not None:
             st.subheader("Ekstraher regnskapsdata til Excel")
             st.caption(
                 "Bruker Claude til å lese PDF-ene og trekke ut nøkkeltall. "
-                "Kan ta litt tid — ca. 10–20 sek per år."
+                "Alle år behandles parallelt — vanligvis ferdig på 10–20 sek totalt."
             )
 
             if "ANTHROPIC_API_KEY" not in st.secrets:
                 st.warning("Anthropic API-nøkkel mangler. Legg til `ANTHROPIC_API_KEY` i Streamlit Secrets.")
             elif st.button("📊  Ekstraher og last ned Excel", use_container_width=True, type="primary"):
                 sorted_years = sorted(years)
-                bar  = st.progress(0, text="Starter…")
-                rows = []
-                errs = []
+                bar     = st.progress(0, text="Starter…")
+                done    = 0
+                results = {}
+                errs    = []
 
-                for i, yr in enumerate(sorted_years, 1):
-                    bar.progress((i - 1) / len(sorted_years), text=f"Behandler {yr} ({i}/{len(sorted_years)})…")
-                    try:
-                        pdf_bytes = fetch_pdf(orgnr, yr)
-                        data      = extract_financials_from_pdf(pdf_bytes)
-                        rows.append({
-                            "År":                    int(yr),
-                            # Resultatregnskap
-                            "Salgsinntekter":         data.get("salgsinntekter"),
-                            "Driftsinntekter":        data.get("driftsinntekter"),
-                            "Varekostnad":            data.get("varekostnad"),
-                            "Lønnskostnad":           data.get("lønnskostnad"),
-                            "Avskrivninger":          data.get("avskrivninger"),
-                            "Andre driftskostnader":  data.get("andre_driftskostnader"),
-                            "Sum driftskostnader":    data.get("sum_driftskostnader"),
-                            "Driftsresultat":         data.get("driftsresultat"),
-                            "Finansinntekter":        data.get("finansinntekter"),
-                            "Finanskostnader":        data.get("finanskostnader"),
-                            "Resultat før skatt":     data.get("resultat_for_skatt"),
-                            "Skattekostnad":          data.get("skattekostnad"),
-                            "Årsresultat":            data.get("aarsresultat"),
-                            # Balanse — eiendeler
-                            "Anleggsmidler":          data.get("anleggsmidler"),
-                            "Omløpsmidler":           data.get("omlopsmidler"),
-                            "Sum eiendeler":          data.get("sum_eiendeler"),
-                            # Balanse — egenkapital og gjeld
-                            "Innskutt egenkapital":   data.get("innskutt_egenkapital"),
-                            "Opptjent egenkapital":   data.get("opptjent_egenkapital"),
-                            "Sum egenkapital":        data.get("sum_egenkapital"),
-                            "Langsiktig gjeld":       data.get("langsiktig_gjeld"),
-                            "Kortsiktig gjeld":       data.get("kortsiktig_gjeld"),
-                            "Sum gjeld":              data.get("sum_gjeld"),
-                        })
-                    except Exception as e:
-                        errs.append(f"{yr}: {e}")
+                def _fetch_and_extract(yr: str) -> tuple[str, dict]:
+                    pdf_bytes = fetch_pdf(orgnr, yr)
+                    return yr, extract_financials_from_pdf(pdf_bytes)
+
+                with ThreadPoolExecutor(max_workers=len(sorted_years)) as pool:
+                    futures = {pool.submit(_fetch_and_extract, yr): yr for yr in sorted_years}
+                    for future in as_completed(futures):
+                        yr = futures[future]
+                        try:
+                            _, data = future.result()
+                            results[yr] = data
+                        except Exception as e:
+                            errs.append(f"{yr}: {e}")
+                        done += 1
+                        bar.progress(done / len(sorted_years), text=f"{done}/{len(sorted_years)} ferdig…")
+
+                rows = []
+                for yr in sorted_years:
+                    if yr not in results:
+                        continue
+                    data = results[yr]
+                    rows.append({
+                        "År":                    int(yr),
+                        # Resultatregnskap
+                        "Salgsinntekter":         data.get("salgsinntekter"),
+                        "Driftsinntekter":        data.get("driftsinntekter"),
+                        "Varekostnad":            data.get("varekostnad"),
+                        "Lønnskostnad":           data.get("lønnskostnad"),
+                        "Avskrivninger":          data.get("avskrivninger"),
+                        "Andre driftskostnader":  data.get("andre_driftskostnader"),
+                        "Sum driftskostnader":    data.get("sum_driftskostnader"),
+                        "Driftsresultat":         data.get("driftsresultat"),
+                        "Finansinntekter":        data.get("finansinntekter"),
+                        "Finanskostnader":        data.get("finanskostnader"),
+                        "Resultat før skatt":     data.get("resultat_for_skatt"),
+                        "Skattekostnad":          data.get("skattekostnad"),
+                        "Årsresultat":            data.get("aarsresultat"),
+                        # Balanse — eiendeler
+                        "Anleggsmidler":          data.get("anleggsmidler"),
+                        "Omløpsmidler":           data.get("omlopsmidler"),
+                        "Sum eiendeler":          data.get("sum_eiendeler"),
+                        # Balanse — egenkapital og gjeld
+                        "Innskutt egenkapital":   data.get("innskutt_egenkapital"),
+                        "Opptjent egenkapital":   data.get("opptjent_egenkapital"),
+                        "Sum egenkapital":        data.get("sum_egenkapital"),
+                        "Langsiktig gjeld":       data.get("langsiktig_gjeld"),
+                        "Kortsiktig gjeld":       data.get("kortsiktig_gjeld"),
+                        "Sum gjeld":              data.get("sum_gjeld"),
+                    })
 
                 bar.progress(1.0, text="Ferdig!")
 
