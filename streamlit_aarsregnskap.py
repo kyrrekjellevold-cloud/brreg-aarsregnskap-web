@@ -84,7 +84,8 @@ def fetch_pdf(orgnr: str, year: str) -> bytes:
 
 # ── Claude PDF extraction ─────────────────────────────────────────────────────
 
-def extract_financials_from_pdf(pdf_bytes: bytes) -> dict:
+def extract_financials_from_pdf(pdf_bytes: bytes, retries: int = 3) -> dict:
+    import time
     client = anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
     prompt = (
         "Du er en norsk regnskapsekspert. Les dette årsregnskapet og returner et JSON-objekt "
@@ -117,34 +118,40 @@ def extract_financials_from_pdf(pdf_bytes: bytes) -> dict:
         "- sum_gjeld\n\n"
         "Returner KUN gyldig JSON, ingen forklaring, ingen kodeblokk."
     )
-    message = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=1024,
-        messages=[{
-            "role": "user",
-            "content": [
-                {
-                    "type": "document",
-                    "source": {
-                        "type": "base64",
-                        "media_type": "application/pdf",
-                        "data": base64.standard_b64encode(pdf_bytes).decode("utf-8"),
-                    },
-                },
-                {"type": "text", "text": prompt},
-            ],
-        }],
-    )
-    text = message.content[0].text.strip()
-    # Strip markdown code fences if present
-    if text.startswith("```"):
-        text = text.split("```")[1]
-        if text.startswith("json"):
-            text = text[4:]
-    try:
-        return json.loads(text)
-    except Exception:
-        return {}
+    for attempt in range(retries):
+        try:
+            message = client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=1024,
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "document",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "application/pdf",
+                                "data": base64.standard_b64encode(pdf_bytes).decode("utf-8"),
+                            },
+                        },
+                        {"type": "text", "text": prompt},
+                    ],
+                }],
+            )
+            text = message.content[0].text.strip()
+            if text.startswith("```"):
+                text = text.split("```")[1]
+                if text.startswith("json"):
+                    text = text[4:]
+            return json.loads(text)
+        except anthropic.RateLimitError:
+            if attempt < retries - 1:
+                time.sleep(2 ** attempt)  # 1s, 2s, 4s backoff
+            else:
+                raise
+        except Exception:
+            return {}
+    return {}
 
 
 # ── Page ─────────────────────────────────────────────────────────────────────
@@ -294,7 +301,7 @@ if st.session_state.companies is not None:
                     pdf_bytes = fetch_pdf(orgnr, yr)
                     return yr, extract_financials_from_pdf(pdf_bytes)
 
-                with ThreadPoolExecutor(max_workers=len(sorted_years)) as pool:
+                with ThreadPoolExecutor(max_workers=min(3, len(sorted_years))) as pool:
                     futures = {pool.submit(_fetch_and_extract, yr): yr for yr in sorted_years}
                     for future in as_completed(futures):
                         yr = futures[future]
