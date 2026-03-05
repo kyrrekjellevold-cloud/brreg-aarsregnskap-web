@@ -13,10 +13,10 @@ import threading
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-import anthropic
 import pandas as pd
 import requests
 import streamlit as st
+from mistralai import Mistral
 
 st.set_page_config(
     page_title="Brreg Årsregnskap",
@@ -82,18 +82,40 @@ def fetch_pdf(orgnr: str, year: str) -> bytes:
     return r.content
 
 
-# ── Claude PDF extraction ─────────────────────────────────────────────────────
+# ── Mistral OCR + extraction ──────────────────────────────────────────────────
 
-def extract_financials_from_pdf(pdf_bytes: bytes, retries: int = 3) -> dict:
-    import time
-    client = anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
+def _mistral_client() -> Mistral:
+    return Mistral(api_key=st.secrets["MISTRAL_API_KEY"])
+
+
+def ocr_pdf(pdf_bytes: bytes) -> str:
+    client = _mistral_client()
+    upload = client.files.upload(
+        file=("regnskap.pdf", pdf_bytes, "application/pdf"),
+        purpose="ocr",
+    )
+    file_id = upload.id
+    try:
+        signed = client.files.get_signed_url(file_id=file_id)
+        result = client.ocr.process(
+            model="mistral-ocr-latest",
+            document={"type": "document_url", "document_url": signed.url},
+        )
+        return "\n\n".join(page.markdown for page in result.pages)
+    finally:
+        client.files.delete(file_id=file_id)
+
+
+def extract_financials_from_pdf(pdf_bytes: bytes) -> dict:
+    ocr_text = ocr_pdf(pdf_bytes)
+    client = _mistral_client()
     prompt = (
-        "Du er en norsk regnskapsekspert. Les dette årsregnskapet nøye og returner et JSON-objekt.\n\n"
+        "Du er en norsk regnskapsekspert. Les dette årsregnskapet og returner et JSON-objekt.\n\n"
         "VIKTIG:\n"
         "- Tall skal være hele kroner som heltall (fjern punktum-tusenskilletegn og komma-desimaler)\n"
         "- Hvis regnskapet er oppgitt i TNOK (tusen kroner), multipliser med 1000\n"
         "- Bruk null hvis posten ikke finnes — men let grundig etter synonymer\n"
-        "- Returner KUN gyldig JSON, ingen forklaring, ingen kodeblokk\n\n"
+        "- Returner KUN gyldig JSON\n\n"
         "RESULTATREGNSKAP — felt og vanlige synonymer:\n"
         "- salgsinntekter (= salgsinntekt, inntekter fra salg)\n"
         "- driftsinntekter (= sum driftsinntekter, totale driftsinntekter, driftsinntekt)\n"
@@ -118,42 +140,16 @@ def extract_financials_from_pdf(pdf_bytes: bytes, retries: int = 3) -> dict:
         "- sum_egenkapital (= sum egenkapital, total egenkapital)\n"
         "- langsiktig_gjeld (= sum langsiktig gjeld, langsiktige forpliktelser)\n"
         "- kortsiktig_gjeld (= sum kortsiktig gjeld, kortsiktige forpliktelser)\n"
-        "- sum_gjeld (= sum gjeld, total gjeld)\n"
+        "- sum_gjeld (= sum gjeld, total gjeld)\n\n"
+        "REGNSKAPSTEKST:\n"
+        f"{ocr_text}"
     )
-    for attempt in range(retries):
-        try:
-            message = client.messages.create(
-                model="claude-sonnet-4-6",
-                max_tokens=1024,
-                messages=[{
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "document",
-                            "source": {
-                                "type": "base64",
-                                "media_type": "application/pdf",
-                                "data": base64.standard_b64encode(pdf_bytes).decode("utf-8"),
-                            },
-                        },
-                        {"type": "text", "text": prompt},
-                    ],
-                }],
-            )
-            text = message.content[0].text.strip()
-            if text.startswith("```"):
-                text = text.split("```")[1]
-                if text.startswith("json"):
-                    text = text[4:]
-            return json.loads(text)
-        except anthropic.RateLimitError:
-            if attempt < retries - 1:
-                time.sleep(30 * (attempt + 1))  # 30s, 60s, 90s
-            else:
-                raise
-        except json.JSONDecodeError:
-            return {}
-        # All other exceptions propagate so the caller can show them
+    response = client.chat.complete(
+        model="mistral-large-latest",
+        messages=[{"role": "user", "content": prompt}],
+        response_format={"type": "json_object"},
+    )
+    return json.loads(response.choices[0].message.content)
 
 
 # ── Page ─────────────────────────────────────────────────────────────────────
@@ -286,12 +282,12 @@ if st.session_state.companies is not None:
             st.divider()
             st.subheader("Ekstraher regnskapsdata til Excel")
             st.caption(
-                "Bruker Claude til å lese PDF-ene og trekke ut nøkkeltall. "
-                "Behandler ett år om gangen — ca. 10–15 sek per år."
+                "Bruker Mistral OCR til å lese PDF-ene og trekke ut nøkkeltall. "
+                "Behandler ett år om gangen — ca. 5–10 sek per år."
             )
 
-            if "ANTHROPIC_API_KEY" not in st.secrets:
-                st.warning("Anthropic API-nøkkel mangler. Legg til `ANTHROPIC_API_KEY` i Streamlit Secrets.")
+            if "MISTRAL_API_KEY" not in st.secrets:
+                st.warning("Mistral API-nøkkel mangler. Legg til `MISTRAL_API_KEY` i Streamlit Secrets.")
             elif st.button("📊  Ekstraher og last ned Excel", use_container_width=True, type="primary"):
                 sorted_years = sorted(years)
                 bar     = st.progress(0, text="Starter…")
@@ -310,8 +306,6 @@ if st.session_state.companies is not None:
                     except Exception as e:
                         errs.append(f"{yr}: {e}")
                     done += 1
-                    if i < len(sorted_years) - 1:
-                        import time; time.sleep(5)
 
                 rows = []
                 for yr in sorted_years:
