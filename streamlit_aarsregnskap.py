@@ -91,7 +91,7 @@ def _mistral_client() -> Mistral:
 def ocr_pdf(pdf_bytes: bytes) -> str:
     client = _mistral_client()
     upload = client.files.upload(
-        file=("regnskap.pdf", pdf_bytes, "application/pdf"),
+        file={"file_name": "regnskap.pdf", "content": pdf_bytes},
         purpose="ocr",
     )
     file_id = upload.id
