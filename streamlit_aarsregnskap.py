@@ -110,47 +110,44 @@ def extract_financials_from_pdf(pdf_bytes: bytes) -> tuple[dict, str]:
     ocr_text = ocr_pdf(pdf_bytes)
     client = _mistral_client()
     prompt = (
-        "Du er en norsk regnskapsekspert. Les dette årsregnskapet og returner et JSON-objekt.\n\n"
-        "VIKTIG:\n"
-        "- Tall skal være hele kroner som heltall (fjern punktum-tusenskilletegn og komma-desimaler)\n"
-        "- Hvis regnskapet er oppgitt i TNOK (tusen kroner), multipliser med 1000\n"
-        "- Bruk null hvis posten ikke finnes — men let grundig etter synonymer\n"
-        "- Returner KUN gyldig JSON\n\n"
-        "RESULTATREGNSKAP — felt og vanlige synonymer:\n"
-        "- salgsinntekter (= salgsinntekt, inntekter fra salg)\n"
-        "- driftsinntekter (= sum driftsinntekter, totale driftsinntekter, driftsinntekt)\n"
-        "- varekostnad (= vareforbruk, varekostnader, kjøp av varer)\n"
-        "- lønnskostnad (= lønn og sosiale kostnader, personalkostnader, lønninger, lønn og feriepenger)\n"
-        "- avskrivninger (= av- og nedskrivninger, ordinære avskrivninger, avskrivning på driftsmidler)\n"
-        "- andre_driftskostnader (= annen driftskostnad, øvrige driftskostnader, andre kostnader)\n"
-        "- sum_driftskostnader (= sum kostnader, totale driftskostnader)\n"
-        "- driftsresultat (= resultat av driften, driftsresultat/tap)\n"
-        "- finansinntekter (= finansielle inntekter, renteinntekter og lignende)\n"
-        "- finanskostnader (= finansielle kostnader, rentekostnader og lignende)\n"
-        "- resultat_for_skatt (= ordinært resultat før skattekostnad, resultat før skatt)\n"
-        "- skattekostnad (= skattekostnad på ordinært resultat, betalbar skatt)\n"
-        "- aarsresultat (= årsoverskudd, årsunderskudd, årets resultat, årsresultat)\n\n"
-        "BALANSE — EIENDELER:\n"
-        "- anleggsmidler (= sum anleggsmidler, totale anleggsmidler)\n"
-        "- omlopsmidler (= sum omløpsmidler, totale omløpsmidler)\n"
-        "- sum_eiendeler (= sum eiendeler, totale eiendeler, totalkapital)\n\n"
-        "BALANSE — EGENKAPITAL OG GJELD:\n"
-        "- innskutt_egenkapital (= aksjekapital, aksjekapital og overkurs, selskapskapital)\n"
-        "- opptjent_egenkapital (= annen egenkapital, udisponert resultat, fond)\n"
-        "- sum_egenkapital (= sum egenkapital, total egenkapital)\n"
-        "- langsiktig_gjeld (= sum langsiktig gjeld, langsiktige forpliktelser)\n"
-        "- kortsiktig_gjeld (= sum kortsiktig gjeld, kortsiktige forpliktelser)\n"
-        "- sum_gjeld (= sum gjeld, total gjeld)\n\n"
-        "REGNSKAPSTEKST:\n"
+        "Du er en norsk regnskapsekspert. Les årsregnskapet nedenfor og returner et JSON-objekt "
+        "med nøyaktig disse feltene (bruk null hvis posten ikke finnes):\n\n"
+        "salgsinntekter, driftsinntekter, varekostnad, lønnskostnad, avskrivninger, "
+        "andre_driftskostnader, sum_driftskostnader, driftsresultat, finansinntekter, "
+        "finanskostnader, resultat_for_skatt, skattekostnad, aarsresultat, "
+        "anleggsmidler, omlopsmidler, sum_eiendeler, "
+        "innskutt_egenkapital, opptjent_egenkapital, sum_egenkapital, "
+        "langsiktig_gjeld, kortsiktig_gjeld, sum_gjeld\n\n"
+        "REGLER:\n"
+        "- Tall som hele kroner (heltall, ingen desimaler, ingen tusenskilletegn)\n"
+        "- Hvis oppgitt i TNOK, multipliser med 1000\n"
+        "- Vanlige synonymer: driftsinntekter=sum driftsinntekter, lønnskostnad=lønn og sosiale kostnader, "
+        "aarsresultat=årsoverskudd/årsunderskudd/årets resultat, sum_eiendeler=totalkapital\n"
+        "- Returner KUN JSON, ingen forklaring\n\n"
+        "ÅRSREGNSKAP:\n"
         f"{ocr_text}"
     )
     response = client.chat.complete(
         model="mistral-large-latest",
         messages=[{"role": "user", "content": prompt}],
-        response_format={"type": "json_object"},
     )
-    raw = response.choices[0].message.content
-    return json.loads(raw), ocr_text
+    raw = response.choices[0].message.content.strip()
+    # Strip markdown code fences if present
+    if raw.startswith("```"):
+        raw = raw.split("```")[1]
+        if raw.startswith("json"):
+            raw = raw[4:]
+        raw = raw.rsplit("```", 1)[0]
+    parsed = json.loads(raw.strip())
+    # Flatten nested dicts (model sometimes wraps fields in sections)
+    flat = {}
+    for v in parsed.values():
+        if isinstance(v, dict):
+            flat.update(v)
+        else:
+            flat = parsed
+            break
+    return flat, ocr_text
 
 
 # ── Page ─────────────────────────────────────────────────────────────────────
