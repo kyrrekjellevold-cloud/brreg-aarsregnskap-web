@@ -106,7 +106,7 @@ def ocr_pdf(pdf_bytes: bytes) -> str:
         client.files.delete(file_id=file_id)
 
 
-def extract_financials_from_pdf(pdf_bytes: bytes) -> dict:
+def extract_financials_from_pdf(pdf_bytes: bytes) -> tuple[dict, str]:
     ocr_text = ocr_pdf(pdf_bytes)
     client = _mistral_client()
     prompt = (
@@ -149,7 +149,8 @@ def extract_financials_from_pdf(pdf_bytes: bytes) -> dict:
         messages=[{"role": "user", "content": prompt}],
         response_format={"type": "json_object"},
     )
-    return json.loads(response.choices[0].message.content)
+    raw = response.choices[0].message.content
+    return json.loads(raw), ocr_text
 
 
 # ── Page ─────────────────────────────────────────────────────────────────────
@@ -292,17 +293,22 @@ if st.session_state.companies is not None:
                 sorted_years = sorted(years)
                 bar     = st.progress(0, text="Starter…")
                 done    = 0
-                results = {}
-                errs    = []
+                results  = {}
+                errs     = []
+                debug_yr = None   # first year's debug info
 
-                def _fetch_and_extract(yr: str) -> tuple[str, dict]:
+                def _fetch_and_extract(yr: str):
                     pdf_bytes = fetch_pdf(orgnr, yr)
-                    return yr, extract_financials_from_pdf(pdf_bytes)
+                    data, ocr_text = extract_financials_from_pdf(pdf_bytes)
+                    return yr, data, ocr_text
 
                 for i, yr in enumerate(sorted_years):
                     bar.progress(i / len(sorted_years), text=f"Behandler {yr} ({i + 1}/{len(sorted_years)})…")
                     try:
-                        results[yr] = _fetch_and_extract(yr)[1]
+                        yr_res, data, ocr_text = _fetch_and_extract(yr)
+                        results[yr] = data
+                        if debug_yr is None:
+                            debug_yr = {"year": yr, "ocr_sample": ocr_text[:1000], "raw_json": data}
                     except Exception as e:
                         errs.append(f"{yr}: {e}")
                     done += 1
@@ -362,6 +368,13 @@ if st.session_state.companies is not None:
                     with st.expander(f"⚠️ {len(errs)} år feilet — klikk for detaljer"):
                         for e in errs:
                             st.error(e)
+
+                if debug_yr:
+                    with st.expander(f"🔍 Debug — {debug_yr['year']} (OCR-tekst + rådata)"):
+                        st.markdown("**OCR-tekst (første 1000 tegn):**")
+                        st.code(debug_yr["ocr_sample"])
+                        st.markdown("**Ekstrahert JSON:**")
+                        st.json(debug_yr["raw_json"])
 
 # ── Footer ──────────────���─────────────────────────────────────────────────────
 st.divider()
